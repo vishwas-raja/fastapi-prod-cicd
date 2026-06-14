@@ -1,0 +1,58 @@
+name: Build Push Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: up-east-1
+  ECR_REPOSITORY: fastapi-prod-cicd
+  IMAGE_TAG: latest
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE_URI=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/fastapi-prod-cicd
+
+            aws ecr get-login-password --region ap-south-1 | docker login \
+              --username AWS \
+              --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
+
+            git pull origin main
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+            docker image prune -f
