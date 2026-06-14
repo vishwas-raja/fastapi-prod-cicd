@@ -1,4 +1,4 @@
-name: Build Push Deploy to EC2
+name: Build Push Artifact Deploy with Nexus
 
 on:
   push:
@@ -6,38 +6,40 @@ on:
       - main
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: fastapi-prod-cicd
-  IMAGE_TAG: latest
+  APP_NAME: fastapi-prod-cicd
+  ARTIFACT_NAME: app.tar.gz
+  NEXUS_REPO: python-artifacts
 
 jobs:
-  build-push-deploy:
+  build-publish-deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          python-version: "3.11"
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build Docker image
+      - name: Validate Python dependencies
         run: |
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-          IMAGE_URI=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
 
-          docker build -t $IMAGE_URI .
-          docker push $IMAGE_URI
+      - name: Build Python artifact
+        run: |
+          chmod +x scripts/build_artifact.sh
+          ./scripts/build_artifact.sh
 
-      - name: Deploy on EC2
+      - name: Upload artifact to Nexus
+        run: |
+          curl -u "${{ secrets.NEXUS_USER }}:${{ secrets.NEXUS_PASSWORD }}" \
+            --upload-file build/${{ env.ARTIFACT_NAME }} \
+            "${{ secrets.NEXUS_URL }}/repository/${{ env.NEXUS_REPO }}/${{ env.APP_NAME }}/${{ github.sha }}/${{ env.ARTIFACT_NAME }}"
+
+      - name: Deploy artifact on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -45,14 +47,11 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/fastapi-prod-cicd
-
-            aws ecr get-login-password --region ap-south-1 | docker login \
-              --username AWS \
-              --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
-
             git pull origin main
 
-            docker compose pull
-            docker compose up -d --remove-orphans
+            chmod +x scripts/deploy_from_nexus.sh
 
-            docker image prune -f
+            ./scripts/deploy_from_nexus.sh \
+              "${{ secrets.NEXUS_URL }}/repository/${{ env.NEXUS_REPO }}/${{ env.APP_NAME }}/${{ github.sha }}/${{ env.ARTIFACT_NAME }}" \
+              "${{ secrets.NEXUS_USER }}" \
+              "${{ secrets.NEXUS_PASSWORD }}"
