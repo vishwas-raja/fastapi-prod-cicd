@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  AWS_REGION: up-east-1
+  AWS_REGION: us-east-1
   ECR_REPOSITORY: fastapi-prod-cicd
   IMAGE_TAG: latest
 
